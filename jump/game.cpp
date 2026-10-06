@@ -14,27 +14,25 @@
 Adafruit_SSD1306 display(OLED_WIDTH, OLED_HEIGHT, &Wire, OLED_RESET);
 static Preferences prefs;
 
-enum class State : uint8_t { Calibrate, Ready, Playing, GameOver };
+enum class State : uint8_t { Calibrate, Ready, Playing, HitStun, GameOver };
 
 struct Obstacle {
-  bool alive;
   float x;
-  SpriteId spr;
   uint8_t scored;
 };
 
 static State state = State::Calibrate;
 static float playerY = 0;
-static float velY = 0;
-static bool onGround = true;
+static bool jumping = false;
+static uint32_t jumpStartMs = 0;
 static uint8_t runFrame = 0;
-static uint8_t animTick = 0;
+static uint32_t runAnimMs = 0;
 static uint16_t score = 0;
 static uint16_t best = 0;
 static float speed = SPEED_START;
-static Obstacle obstacles[MAX_OBSTACLES];
-static float spawnIn = 40;
+static Obstacle obstacle;
 static uint32_t lastFrameMs = 0;
+static uint32_t hitAtMs = 0;
 #if ENABLE_VIBRATION
 static uint32_t vibUntil = 0;
 #endif
@@ -133,77 +131,74 @@ bool displayBegin() {
   return false;
 }
 
+static float groundY() { return (float)(GROUND_Y - PLAYER_H); }
+
+static float jumpHeightAt(float t01) {
+  if (t01 <= 0.0f) return 0;
+  if (t01 >= 1.0f) return 0;
+  if (t01 <= JUMP_HANG_START) {
+    float u = t01 / JUMP_HANG_START;
+    return JUMP_PEAK_PX * (1.0f - (1.0f - u) * (1.0f - u));
+  }
+  if (t01 <= JUMP_HANG_END) return JUMP_PEAK_PX;
+  float u = (t01 - JUMP_HANG_END) / (1.0f - JUMP_HANG_END);
+  return JUMP_PEAK_PX * (1.0f - u) * (1.0f - u);
+}
+
+static void tickJump(uint32_t now) {
+  if (!jumping) {
+    playerY = groundY();
+    return;
+  }
+  float t = (float)(now - jumpStartMs) / (float)JUMP_MS;
+  if (t >= 1.0f) {
+    jumping = false;
+    playerY = groundY();
+    return;
+  }
+  playerY = groundY() - jumpHeightAt(t);
+}
+
+static void tickRunAnim(uint32_t dtMs) {
+  if (jumping) return;
+  runAnimMs += dtMs;
+  while (runAnimMs >= RUN_CYCLE_MS / 2) {
+    runAnimMs -= RUN_CYCLE_MS / 2;
+    runFrame ^= 1;
+  }
+}
+
 static void resetRun() {
-  playerY = (float)(GROUND_Y - PLAYER_H);
-  velY = 0;
-  onGround = true;
+  jumping = false;
+  jumpStartMs = 0;
+  playerY = groundY();
   runFrame = 0;
-  animTick = 0;
+  runAnimMs = 0;
   score = 0;
   speed = SPEED_START;
-  spawnIn = 48;
-  for (int i = 0; i < MAX_OBSTACLES; i++) {
-    obstacles[i].alive = false;
-    obstacles[i].scored = 0;
-  }
-}
-
-static int16_t gapRange() {
-  int16_t gmin = (int16_t)(GAP_MIN_START - score * GAP_SHRINK_PER);
-  int16_t gmax = (int16_t)(GAP_MAX_START - score * GAP_SHRINK_PER * 1.2f);
-  if (gmin < GAP_MIN_FLOOR) gmin = GAP_MIN_FLOOR;
-  if (gmax < gmin + 18) gmax = gmin + 18;
-  return gmax;
-}
-
-static void spawnObstacle() {
-  int slot = -1;
-  for (int i = 0; i < MAX_OBSTACLES; i++) {
-    if (!obstacles[i].alive) {
-      slot = i;
-      break;
-    }
-  }
-  if (slot < 0) return;
-
-  uint8_t r = random(0, 3);
-  SpriteId sid = SPR_OBS_ROCK;
-  if (r == 1) sid = SPR_OBS_STALK;
-  if (r == 2) sid = SPR_OBS_WIDE;
-  obstacles[slot].alive = true;
-  obstacles[slot].x = (float)OLED_WIDTH;
-  obstacles[slot].spr = sid;
-  obstacles[slot].scored = 0;
-
-  int16_t gmin = (int16_t)(GAP_MIN_START - score * GAP_SHRINK_PER);
-  if (gmin < GAP_MIN_FLOOR) gmin = GAP_MIN_FLOOR;
-  spawnIn = (float)random(gmin, gapRange());
+  obstacle.x = (float)OLED_WIDTH;
+  obstacle.scored = 0;
 }
 
 static void doJump() {
-  if (!onGround) return;
-  velY = JUMP_VELOCITY;
-  onGround = false;
+  if (jumping) return;
+  jumping = true;
+  jumpStartMs = millis();
   playJumpSound();
 }
 
 static bool collide() {
-  int16_t px = PLAYER_X + HITBOX_INSET;
-  int16_t py = (int16_t)playerY + HITBOX_INSET;
-  int16_t pw = PLAYER_W - HITBOX_INSET * 2;
-  int16_t ph = PLAYER_H - HITBOX_INSET * 2;
-  for (int i = 0; i < MAX_OBSTACLES; i++) {
-    if (!obstacles[i].alive) continue;
-    const Sprite &s = spriteGet(obstacles[i].spr);
-    int16_t ox = (int16_t)obstacles[i].x + 1;
-    int16_t oy = GROUND_Y - s.h;
-    int16_t ow = s.w - 2;
-    int16_t oh = s.h;
-    if (ow < 4) ow = s.w;
-    bool sep = px + pw <= ox || ox + ow <= px || py + ph <= oy || oy + oh <= py;
-    if (!sep) return true;
-  }
-  return false;
+  int16_t px = PLAYER_X + HITBOX_INSET_X;
+  int16_t py = (int16_t)playerY + HITBOX_INSET_Y;
+  int16_t pw = PLAYER_W - HITBOX_INSET_X * 2;
+  int16_t ph = PLAYER_H - HITBOX_INSET_Y * 2;
+  const Sprite &s = spriteGet(SPR_OBS_POST);
+  int16_t ox = (int16_t)obstacle.x;
+  int16_t oy = GROUND_Y - s.h;
+  int16_t ow = s.w;
+  int16_t oh = s.h;
+  bool sep = px + pw <= ox || ox + ow <= px || py + ph <= oy || oy + oh <= py;
+  return !sep;
 }
 
 static void saveBest() {
@@ -213,8 +208,11 @@ static void saveBest() {
   }
 }
 
-static void enterGameOver() {
-  state = State::GameOver;
+static void enterHit() {
+  jumping = false;
+  playerY = groundY();
+  state = State::HitStun;
+  hitAtMs = millis();
   saveBest();
   haptic(VIBRATION_MS);
   playHitSound();
@@ -253,13 +251,20 @@ static void drawHudPlaying() {
 static void drawWorld() {
   drawGround();
   SpriteId ps = SPR_JUMP;
-  if (onGround) ps = (runFrame & 1) ? SPR_RUN1 : SPR_RUN2;
-  drawSprite(display, PLAYER_X, (int16_t)playerY, ps);
-  for (int i = 0; i < MAX_OBSTACLES; i++) {
-    if (!obstacles[i].alive) continue;
-    const Sprite &s = spriteGet(obstacles[i].spr);
-    drawSprite(display, (int16_t)obstacles[i].x, GROUND_Y - s.h, obstacles[i].spr);
+  if (state == State::HitStun || state == State::GameOver) {
+    ps = SPR_JUMP;
+  } else if (!jumping) {
+    ps = runFrame ? SPR_RUN2 : SPR_RUN1;
   }
+  int16_t px = PLAYER_X;
+  int16_t py = (int16_t)playerY;
+  if (state == State::HitStun || state == State::GameOver) {
+    px += 1;
+    py += 1;
+  }
+  drawSprite(display, px, py, ps);
+  const Sprite &s = spriteGet(SPR_OBS_POST);
+  drawSprite(display, (int16_t)obstacle.x, GROUND_Y - s.h, SPR_OBS_POST);
 }
 
 static void drawCalibrate() {
@@ -310,47 +315,26 @@ static void drawGameOver() {
   display.display();
 }
 
-static void updatePlaying() {
+static void updatePlaying(uint32_t now, uint32_t dtMs) {
   if (emgPollJump()) doJump();
-
-  velY += GRAVITY;
-  if (velY > MAX_FALL_SPEED) velY = MAX_FALL_SPEED;
-  playerY += velY;
-  float ground = (float)(GROUND_Y - PLAYER_H);
-  if (playerY >= ground) {
-    playerY = ground;
-    velY = 0;
-    onGround = true;
-  } else {
-    onGround = false;
-  }
-
-  animTick++;
-  if (animTick >= 4) {
-    animTick = 0;
-    runFrame++;
-  }
+  tickJump(now);
+  tickRunAnim(dtMs);
 
   speed = SPEED_START + score * SPEED_PER_SCORE;
   if (speed > SPEED_MAX) speed = SPEED_MAX;
 
-  spawnIn -= speed;
-  if (spawnIn <= 0) spawnObstacle();
-
-  for (int i = 0; i < MAX_OBSTACLES; i++) {
-    if (!obstacles[i].alive) continue;
-    obstacles[i].x -= speed;
-    const Sprite &s = spriteGet(obstacles[i].spr);
-    if (!obstacles[i].scored && obstacles[i].x + s.w < PLAYER_X) {
-      obstacles[i].scored = 1;
-      score++;
-    }
-    if (obstacles[i].x + s.w < -2) {
-      obstacles[i].alive = false;
-    }
+  obstacle.x -= speed;
+  const Sprite &s = spriteGet(SPR_OBS_POST);
+  if (!obstacle.scored && obstacle.x + s.w < PLAYER_X) {
+    obstacle.scored = 1;
+    score++;
+  }
+  if (obstacle.x + s.w < -2) {
+    obstacle.x = (float)OLED_WIDTH;
+    obstacle.scored = 0;
   }
 
-  if (collide()) enterGameOver();
+  if (collide()) enterHit();
 }
 
 void gameBegin() {
@@ -406,12 +390,9 @@ void gameLoop() {
       break;
     case State::Ready:
       if (now - lastFrameMs >= frameMs) {
+        uint32_t dt = now - lastFrameMs;
         lastFrameMs = now;
-        animTick++;
-        if (animTick >= 4) {
-          animTick = 0;
-          runFrame++;
-        }
+        tickRunAnim(dt);
         drawReady();
       }
       if (emgPollJump()) {
@@ -422,10 +403,19 @@ void gameLoop() {
       break;
     case State::Playing:
       if (now - lastFrameMs >= frameMs) {
+        uint32_t dt = now - lastFrameMs;
         lastFrameMs = now;
-        updatePlaying();
-        if (state == State::Playing) drawPlaying();
-        else drawGameOver();
+        updatePlaying(now, dt);
+        drawPlaying();
+      }
+      break;
+    case State::HitStun:
+      if (now - lastFrameMs >= frameMs) {
+        lastFrameMs = now;
+        drawPlaying();
+      }
+      if (now - hitAtMs >= HIT_STUN_MS) {
+        state = State::GameOver;
       }
       break;
     case State::GameOver:

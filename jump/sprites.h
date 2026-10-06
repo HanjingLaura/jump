@@ -7,9 +7,7 @@ enum SpriteId : uint8_t {
   SPR_RUN1 = 0,
   SPR_RUN2,
   SPR_JUMP,
-  SPR_OBS_ROCK,
-  SPR_OBS_STALK,
-  SPR_OBS_WIDE,
+  SPR_OBS_POST,
 };
 
 struct Sprite {
