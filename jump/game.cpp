@@ -201,9 +201,9 @@ static bool collide() {
   int16_t pw = PLAYER_W - HITBOX_INSET_X * 2;
   int16_t ph = PLAYER_H - HITBOX_INSET_Y * 2;
   const Sprite &s = spriteGet(SPR_OBS_POST);
-  int16_t ox = (int16_t)obstacle.x + 1;   // post is drawn in columns 1..6 of its 8 px cell
+  int16_t ox = (int16_t)obstacle.x;       // hitbox == drawn 4x5 rock
   int16_t oy = GROUND_Y - s.h;
-  int16_t ow = s.w - 2;
+  int16_t ow = s.w;
   int16_t oh = s.h;
   bool sep = px + pw <= ox || ox + ow <= px || py + ph <= oy || oy + oh <= py;
   return !sep;

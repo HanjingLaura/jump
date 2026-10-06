@@ -37,18 +37,15 @@ const uint8_t spr_jump[] PROGMEM = {
   0x7F,0xF0,0x3F,0xC0,0x3F,0xC0,0x1F,0x80,0x19,0x80,0x30,0xC0,0x30,0x60,0x00,0x00,
 };
 
-// Original obstacle: a low banded marker post, 6 px wide x 8 px tall
-// (drawn in columns 1..6 of an 8 px cell; the hitbox matches).
-//   .######.
-//   .######.
-//   .##..##.
-//   .######.
-//   .######.
-//   .##..##.
-//   .######.
-//   .######.
+// Original obstacle: a small rock/stub, 4 px wide x 5 px tall
+// (left-aligned in a 1-byte row; the hitbox is exactly 4x5).
+//   .##.
+//   ####
+//   ####
+//   ####
+//   ####
 const uint8_t obs_post[] PROGMEM = {
-  0x7E,0x7E,0x66,0x7E,0x7E,0x66,0x7E,0x7E,
+  0x60,0xF0,0xF0,0xF0,0xF0,
 };
 
 // Chinese UI labels, 12 px tall.
@@ -98,7 +95,7 @@ static const Sprite kSprites[] = {
   {spr_run1, 16, 16},
   {spr_run2, 16, 16},
   {spr_jump, 16, 16},
-  {obs_post, 8, 8},
+  {obs_post, 4, 5},
 };
 
 const Sprite &spriteGet(SpriteId id) {
