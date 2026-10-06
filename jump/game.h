@@ -8,4 +8,4 @@ extern Adafruit_SSD1306 display;
 
 bool displayBegin();
 void gameBegin();
-void gameLoop();  // call from loop(); internally paces EMG + ~30 fps frames
+void gameLoop();  // call from loop(); polls the button, paces ~30 fps frames

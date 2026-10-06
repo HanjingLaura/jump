@@ -3,14 +3,13 @@
 // ---------------------------------------------------------------------------
 // Hardware pins (fixed — do not change)
 // ---------------------------------------------------------------------------
-#define PIN_EMG            1     // ADC1 analog, dry-electrode myoelectric board
-#define PIN_JUMP_BTN       4     // INPUT_PULLUP, pressed = LOW
-#define PIN_VIBRATION      5     // optional motor
-#define PIN_I2S_DIN        7
+#define PIN_JUMP_BTN       4     // INPUT_PULLUP, other side to GND, pressed = LOW
+#define PIN_VIBRATION      5     // vibration module S/IN, HIGH = motor on
+#define PIN_I2S_DIN        7     // MAX98357 DIN
 #define PIN_OLED_SDA       8
 #define PIN_OLED_SCL       9
-#define PIN_I2S_BCLK       15
-#define PIN_I2S_LRC        16
+#define PIN_I2S_BCLK       15    // MAX98357 BCLK
+#define PIN_I2S_LRC        16    // MAX98357 LRC / WS
 
 // Do not use GPIO 0 / 3 / 45 / 46 on this board.
 
@@ -21,35 +20,38 @@
 #define OLED_RESET         -1
 
 // ---------------------------------------------------------------------------
-// Optional peripherals (off by default)
+// Button
+// ---------------------------------------------------------------------------
+#define BTN_DEBOUNCE_MS    25           // level must be stable this long
+
+// ---------------------------------------------------------------------------
+// Sound (MAX98357 I2S) — on by default
+// ---------------------------------------------------------------------------
+#ifndef ENABLE_AUDIO
+#define ENABLE_AUDIO       1
+#endif
+#define AUDIO_SAMPLE_RATE  16000
+// 0..100. Square-wave effects get loud fast on a MAX98357 (default 9 dB gain),
+// so the default is moderate. Raise/lower and re-flash.
+#ifndef VOLUME
+#define VOLUME             35
+#endif
+
+// ---------------------------------------------------------------------------
+// Vibration (motor module with its own driver) — on by default
 // ---------------------------------------------------------------------------
 #ifndef ENABLE_VIBRATION
-#define ENABLE_VIBRATION   0
+#define ENABLE_VIBRATION   1
 #endif
-#ifndef ENABLE_AUDIO
-#define ENABLE_AUDIO       0
+#ifndef VIBRATE_ON_JUMP
+#define VIBRATE_ON_JUMP    1            // short tick on every jump
 #endif
-
-#define VIBRATION_MS       150
-
-// ---------------------------------------------------------------------------
-// EMG detection
-// ---------------------------------------------------------------------------
-#define EMG_SAMPLE_HZ      500
-#define EMG_ADC_BITS       12
-#define EMG_CALIB_MS       3000
-#define EMG_CALIB_SKIP_MS  250          // ignore the first samples while settling
-#define EMG_LP_ALPHA       0.12f        // envelope low-pass at ~500 Hz
-#define EMG_DC_ALPHA       0.005f       // slow DC tracker for rectification
-#define EMG_K              6.0f         // threshold = baseline + k * noise
-#define EMG_HYST_RATIO     0.55f        // release when env < baseline + hyst*k*noise
-#define EMG_COOLDOWN_MS    300          // one effort = one jump
-#define EMG_NOISE_FLOOR    12.0f        // minimum noise so a dead-quiet ADC still arms
-#define EMG_DEBUG_HZ       20
+#define VIBRATION_MS       150          // crash pulse
+#define VIBRATION_JUMP_MS  30           // jump tick
 
 // ---------------------------------------------------------------------------
-// Gameplay — rhythm copied from HanjingLaura/zhi-dao-le DinoRunner
-// (waiting mini-game above the generate button):
+// Gameplay — rhythm copied from the HanjingLaura/zhi-dao-le waiting runner
+// mini-game (above the generate button):
 //   run cycle 166 ms / 2 frames, jump 680 ms with hang at 38–64%,
 //   one obstacle loops every 2.35 s, hit freezes 520 ms.
 // That web game has no score and auto-resumes; this firmware keeps
@@ -69,8 +71,8 @@
 #define JUMP_BEZIER_X2     0.35f
 #define JUMP_BEZIER_Y2     1.00f
 #define RUN_CYCLE_MS       166          // two frames, step-end
-#define HITBOX_INSET_X     2            // web: 5px of 44px dino
-#define HITBOX_INSET_Y     1            // web: 3px of 47px dino
+#define HITBOX_INSET_X     2            // web: 5px of the 44px runner
+#define HITBOX_INSET_Y     1            // web: 3px of the 47px runner
 
 #define OBSTACLE_PERIOD_MS 2350
 #define SPEED_START        ((float)(OLED_WIDTH + 8) * 1000.0f / (float)OBSTACLE_PERIOD_MS / (float)GAME_FPS)

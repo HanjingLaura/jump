@@ -1,27 +1,22 @@
 #include "game.h"
 #include "config.h"
-#include "emg.h"
+#include "audio.h"
 #include "sprites.h"
 
 #include <Wire.h>
 #include <Preferences.h>
-#include <string.h>
-
-#if ENABLE_AUDIO
-#include "driver/i2s_std.h"
-#endif
 
 Adafruit_SSD1306 display(OLED_WIDTH, OLED_HEIGHT, &Wire, OLED_RESET);
 static Preferences prefs;
 
-enum class State : uint8_t { Calibrate, Ready, Playing, HitStun, GameOver };
+enum class State : uint8_t { Title, Playing, HitStun, GameOver };
 
 struct Obstacle {
   float x;
   uint8_t scored;
 };
 
-static State state = State::Calibrate;
+static State state = State::Title;
 static float playerY = 0;
 static bool jumping = false;
 static uint32_t jumpStartMs = 0;
@@ -33,86 +28,76 @@ static float speed = SPEED_START;
 static Obstacle obstacle;
 static uint32_t lastFrameMs = 0;
 static uint32_t hitAtMs = 0;
-#if ENABLE_VIBRATION
-static uint32_t vibUntil = 0;
-#endif
 static uint8_t oledAddr = OLED_ADDR_PRIMARY;
+static bool oledOk = false;
 
-#if ENABLE_AUDIO
-static i2s_chan_handle_t i2sTx = nullptr;
-static bool i2sOk = false;
+// ---------------------------------------------------------------------------
+// Jump button: GPIO4, INPUT_PULLUP, pressed = LOW. Debounced; one press
+// (released -> pressed edge) produces exactly one event.
+// ---------------------------------------------------------------------------
+static bool btnRaw = HIGH;
+static bool btnStable = HIGH;
+static uint32_t btnChangedMs = 0;
+static bool btnEvent = false;
 
-static void audioBegin() {
-  i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
-  chan_cfg.auto_clear = true;
-  if (i2s_new_channel(&chan_cfg, &i2sTx, nullptr) != ESP_OK) return;
-  i2s_std_config_t std_cfg;
-  memset(&std_cfg, 0, sizeof(std_cfg));
-  std_cfg.clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(16000);
-  std_cfg.slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT,
-                                                         I2S_SLOT_MODE_STEREO);
-  std_cfg.gpio_cfg.mclk = I2S_GPIO_UNUSED;
-  std_cfg.gpio_cfg.bclk = (gpio_num_t)PIN_I2S_BCLK;
-  std_cfg.gpio_cfg.ws = (gpio_num_t)PIN_I2S_LRC;
-  std_cfg.gpio_cfg.dout = (gpio_num_t)PIN_I2S_DIN;
-  std_cfg.gpio_cfg.din = I2S_GPIO_UNUSED;
-  if (i2s_channel_init_std_mode(i2sTx, &std_cfg) != ESP_OK) return;
-  if (i2s_channel_enable(i2sTx) != ESP_OK) return;
-  i2sOk = true;
+static void buttonBegin() {
+  pinMode(PIN_JUMP_BTN, INPUT_PULLUP);
+  btnRaw = btnStable = digitalRead(PIN_JUMP_BTN);
+  btnChangedMs = millis();
 }
 
-static void audioBeep(uint16_t freqHz, uint16_t ms) {
-  if (!i2sOk) return;
-  const int sampleRate = 16000;
-  const int n = (sampleRate * ms) / 1000;
-  int16_t stereo[128];
-  int period = sampleRate / (freqHz ? freqHz : 1);
-  if (period < 2) period = 2;
-  int remaining = n;
-  int phase = 0;
-  while (remaining > 0) {
-    int chunk = remaining > 64 ? 64 : remaining;
-    for (int i = 0; i < chunk; i++) {
-      int16_t s = (phase < period / 2) ? 6000 : -6000;
-      stereo[i * 2] = s;
-      stereo[i * 2 + 1] = s;
-      phase++;
-      if (phase >= period) phase = 0;
-    }
-    size_t written = 0;
-    i2s_channel_write(i2sTx, stereo, chunk * 4, &written, 50);
-    remaining -= chunk;
+static void buttonService(uint32_t now) {
+  bool r = digitalRead(PIN_JUMP_BTN);
+  if (r != btnRaw) {
+    btnRaw = r;
+    btnChangedMs = now;
+  }
+  if (btnRaw != btnStable && now - btnChangedMs >= BTN_DEBOUNCE_MS) {
+    btnStable = btnRaw;
+    if (btnStable == LOW) btnEvent = true;
   }
 }
+
+static bool buttonTakePress() {
+  bool e = btnEvent;
+  btnEvent = false;
+  return e;
+}
+
+// ---------------------------------------------------------------------------
+// Vibration: GPIO5 HIGH = motor on. Non-blocking pulse.
+// ---------------------------------------------------------------------------
+#if ENABLE_VIBRATION
+static uint32_t vibUntil = 0;
+static bool vibOn = false;
 #endif
+
+static void hapticBegin() {
+#if ENABLE_VIBRATION
+  pinMode(PIN_VIBRATION, OUTPUT);
+  digitalWrite(PIN_VIBRATION, LOW);
+#endif
+}
 
 static void haptic(uint16_t ms) {
 #if ENABLE_VIBRATION
+  uint32_t until = millis() + ms;
+  if (!vibOn || (int32_t)(until - vibUntil) > 0) vibUntil = until;
+  vibOn = true;
   digitalWrite(PIN_VIBRATION, HIGH);
-  vibUntil = millis() + ms;
 #else
   (void)ms;
 #endif
 }
 
-static void hapticService() {
+static void hapticService(uint32_t now) {
 #if ENABLE_VIBRATION
-  if (vibUntil && (int32_t)(millis() - vibUntil) >= 0) {
+  if (vibOn && (int32_t)(now - vibUntil) >= 0) {
     digitalWrite(PIN_VIBRATION, LOW);
-    vibUntil = 0;
+    vibOn = false;
   }
-#endif
-}
-
-static void playJumpSound() {
-#if ENABLE_AUDIO
-  audioBeep(880, 60);
-#endif
-}
-
-static void playHitSound() {
-#if ENABLE_AUDIO
-  audioBeep(196, 140);
+#else
+  (void)now;
 #endif
 }
 
@@ -204,7 +189,10 @@ static void doJump() {
   if (jumping) return;
   jumping = true;
   jumpStartMs = millis();
-  playJumpSound();
+  audioPlay(SFX_JUMP);
+#if VIBRATE_ON_JUMP
+  haptic(VIBRATION_JUMP_MS);
+#endif
 }
 
 static bool collide() {
@@ -213,9 +201,9 @@ static bool collide() {
   int16_t pw = PLAYER_W - HITBOX_INSET_X * 2;
   int16_t ph = PLAYER_H - HITBOX_INSET_Y * 2;
   const Sprite &s = spriteGet(SPR_OBS_POST);
-  int16_t ox = (int16_t)obstacle.x;
+  int16_t ox = (int16_t)obstacle.x + 1;   // post body is 6 px wide in an 8 px cell
   int16_t oy = GROUND_Y - s.h;
-  int16_t ow = s.w;
+  int16_t ow = s.w - 2;
   int16_t oh = s.h;
   bool sep = px + pw <= ox || ox + ow <= px || py + ph <= oy || oy + oh <= py;
   return !sep;
@@ -233,9 +221,18 @@ static void enterHit() {
   playerY = groundY();
   state = State::HitStun;
   hitAtMs = millis();
-  saveBest();
   haptic(VIBRATION_MS);
-  playHitSound();
+  audioPlay(SFX_CRASH);
+  saveBest();
+  Serial.printf("crash  score=%u best=%u\n", score, best);
+}
+
+static void startRun() {
+  resetRun();
+  buttonTakePress();
+  audioPlay(SFX_START);
+  state = State::Playing;
+  lastFrameMs = millis();
 }
 
 static void drawGround() {
@@ -246,29 +243,19 @@ static void drawGround() {
   }
 }
 
-static void drawEmgBar() {
-  const int16_t x = 90;
-  const int16_t y = 1;
-  const int16_t w = 36;
-  const int16_t h = 6;
-  display.drawRect(x, y, w, h, SSD1306_WHITE);
-  int fill = (int)(emgIntensity01() * (w - 2) + 0.5f);
-  if (fill > w - 2) fill = w - 2;
-  if (fill > 0) display.fillRect(x + 1, y + 1, fill, h - 2, SSD1306_WHITE);
-  // Threshold marker at mid-bar (intensity maps threshold to 0.5).
-  int16_t tx = x + w / 2;
-  display.drawFastVLine(tx, y - 1, h + 2, SSD1306_WHITE);
-}
-
 static void drawHudPlaying() {
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(0, 0);
   display.print(score);
-  drawEmgBar();
+  // best score, right-aligned
+  char buf[12];
+  int n = snprintf(buf, sizeof(buf), "HI %u", best);
+  display.setCursor(OLED_WIDTH - n * 6, 0);
+  display.print(buf);
 }
 
-static void drawWorld() {
+static void drawWorld(bool showObstacle) {
   drawGround();
   SpriteId ps = SPR_JUMP;
   if (state == State::HitStun || state == State::GameOver) {
@@ -283,43 +270,41 @@ static void drawWorld() {
     py += 1;
   }
   drawSprite(display, px, py, ps);
-  const Sprite &s = spriteGet(SPR_OBS_POST);
-  drawSprite(display, (int16_t)obstacle.x, GROUND_Y - s.h, SPR_OBS_POST);
+  if (showObstacle) {
+    const Sprite &s = spriteGet(SPR_OBS_POST);
+    drawSprite(display, (int16_t)obstacle.x, GROUND_Y - s.h, SPR_OBS_POST);
+  }
 }
 
-static void drawCalibrate() {
+static void drawTitle() {
   display.clearDisplay();
-  drawBitmapProgmem(display, 40, 6, bmp_title, bmp_title_W, bmp_title_H);
-  drawBitmapProgmem(display, 40, 24, bmp_relax, bmp_relax_W, bmp_relax_H);
-  drawBitmapProgmem(display, 44, 38, bmp_calibrating, bmp_calibrating_W, bmp_calibrating_H);
-  int16_t w = (int16_t)(emgCalibrateProgress() * 100);
-  display.drawRect(14, 54, 100, 6, SSD1306_WHITE);
-  if (w > 0) display.fillRect(14, 54, w, 6, SSD1306_WHITE);
-  drawEmgBar();
-  display.display();
-}
-
-static void drawReady() {
-  display.clearDisplay();
-  drawWorld();
-  drawBitmapProgmem(display, 44, 18, bmp_ready, bmp_ready_W, bmp_ready_H);
-  drawHudPlaying();
-  display.setCursor(0, 10);
-  display.print("HI ");
-  display.print(best);
+  drawWorld(false);
+  drawBitmapProgmem(display, (OLED_WIDTH - bmp_title_W) / 2, 4,
+                    bmp_title, bmp_title_W, bmp_title_H);
+  // blink the "press to start" prompt
+  if ((millis() / 500) & 1) {
+    drawBitmapProgmem(display, (OLED_WIDTH - bmp_start_W) / 2, 20,
+                      bmp_start, bmp_start_W, bmp_start_H);
+  }
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  char buf[12];
+  int n = snprintf(buf, sizeof(buf), "HI %u", best);
+  display.setCursor(OLED_WIDTH - n * 6 - 4, 40);
+  display.print(buf);
   display.display();
 }
 
 static void drawPlaying() {
   display.clearDisplay();
-  drawWorld();
+  drawWorld(true);
   drawHudPlaying();
   display.display();
 }
 
 static void drawGameOver() {
   display.clearDisplay();
-  drawWorld();
+  drawWorld(true);
   display.fillRect(16, 8, 96, 42, SSD1306_BLACK);
   display.drawRect(16, 8, 96, 42, SSD1306_WHITE);
   drawBitmapProgmem(display, 40, 10, bmp_gameover, bmp_gameover_W, bmp_gameover_H);
@@ -331,7 +316,6 @@ static void drawGameOver() {
   display.print("  HI ");
   display.print(best);
   drawBitmapProgmem(display, 40, 36, bmp_retry, bmp_retry_W, bmp_retry_H);
-  drawEmgBar();
   display.display();
 }
 
@@ -347,6 +331,7 @@ static void updatePlaying(uint32_t now, uint32_t dtMs) {
   if (!obstacle.scored && obstacle.x + s.w < PLAYER_X) {
     obstacle.scored = 1;
     score++;
+    audioPlay(SFX_SCORE);
   }
   if (obstacle.x + s.w < -2) {
     obstacle.x = (float)(OLED_WIDTH + 4);
@@ -358,20 +343,20 @@ static void updatePlaying(uint32_t now, uint32_t dtMs) {
 
 void gameBegin() {
   Serial.begin(SERIAL_BAUD);
-  delay(50);
+  // Give a USB-CDC host a moment to attach so the boot lines are visible.
+  uint32_t t0 = millis();
+  while (!Serial && millis() - t0 < 1500) delay(10);
   Serial.println();
-  Serial.println("EMG Jump  ESP32-S3  128x64");
+  Serial.println("Jump Runner  ESP32-S3  128x64  (button GPIO4)");
 
-#if ENABLE_VIBRATION
-  pinMode(PIN_VIBRATION, OUTPUT);
-  digitalWrite(PIN_VIBRATION, LOW);
-#endif
-#if ENABLE_AUDIO
+  buttonBegin();
+  hapticBegin();
   audioBegin();
-#endif
 
-  emgBegin();
-  if (!displayBegin()) {
+  oledOk = displayBegin();
+  if (oledOk) {
+    Serial.printf("OLED ok at 0x%02X  SDA=%d SCL=%d\n", oledAddr, PIN_OLED_SDA, PIN_OLED_SCL);
+  } else {
     Serial.println("continuing without a confirmed OLED");
   }
   display.clearDisplay();
@@ -380,48 +365,34 @@ void gameBegin() {
   prefs.begin(PREFS_NAMESPACE, false);
   best = prefs.getUShort(PREFS_KEY_BEST, 0);
 
-  randomSeed((uint32_t)esp_random());
   resetRun();
-  emgCalibrateStart();
-  state = State::Calibrate;
+  state = State::Title;
   lastFrameMs = millis();
-  Serial.printf("OLED addr 0x%02X  best=%u\n", oledAddr, best);
+  Serial.printf("audio=%d vibration=%d  best=%u  -> title, press to start\n",
+                ENABLE_AUDIO, ENABLE_VIBRATION, best);
 }
 
 void gameLoop() {
-  emgService();
-  hapticService();
-  emgPrintDebug();
-
   const uint32_t frameMs = 1000 / GAME_FPS;
   uint32_t now = millis();
+  buttonService(now);
+  hapticService(now);
 
   switch (state) {
-    case State::Calibrate:
-      if (emgCalibrateTick()) {
-        resetRun();
-        state = State::Ready;
+    case State::Title:
+      if (buttonTakePress()) {
+        startRun();
+        break;
       }
-      if (now - lastFrameMs >= frameMs) {
-        lastFrameMs = now;
-        drawCalibrate();
-      }
-      break;
-    case State::Ready:
       if (now - lastFrameMs >= frameMs) {
         uint32_t dt = now - lastFrameMs;
         lastFrameMs = now;
         tickRunAnim(dt);
-        drawReady();
-      }
-      if (emgPollJump(true)) {
-        resetRun();
-        doJump();
-        state = State::Playing;
+        drawTitle();
       }
       break;
     case State::Playing:
-      if (emgPollJump(!jumping)) doJump();
+      if (buttonTakePress()) doJump();   // ignored while airborne: one press = one jump
       if (now - lastFrameMs >= frameMs) {
         uint32_t dt = now - lastFrameMs;
         lastFrameMs = now;
@@ -430,7 +401,7 @@ void gameLoop() {
       }
       break;
     case State::HitStun:
-      emgPollJump(false);
+      buttonTakePress();                 // swallow presses during the freeze
       if (now - lastFrameMs >= frameMs) {
         lastFrameMs = now;
         drawPlaying();
@@ -440,14 +411,15 @@ void gameLoop() {
       }
       break;
     case State::GameOver:
+      if (buttonTakePress()) {
+        startRun();
+        break;
+      }
       if (now - lastFrameMs >= frameMs) {
         lastFrameMs = now;
         drawGameOver();
       }
-      if (emgPollJump(true)) {
-        resetRun();
-        state = State::Playing;
-      }
       break;
   }
+  delay(1);  // yield; keeps the button sampled at ~1 kHz
 }
