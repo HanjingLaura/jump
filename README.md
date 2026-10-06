@@ -13,7 +13,7 @@
 | 网页 DinoRunner | 本固件 |
 |---|---|
 | 跑动 166 ms 两帧 | `RUN_CYCLE_MS 166` |
-| 跳跃 680 ms，38%–64% 停在最高点（约 20px） | `JUMP_MS 680`，`JUMP_PEAK_PX 18` |
+| 跳跃 680 ms，38%–64% 停在最高点（约 20px），`cubic-bezier(0.3, 0.02, 0.35, 1)` | 同一套关键帧 + 贝塞尔；空中再用力会丢掉，不进入冷却 |
 | 滞空不可连跳 | `doJump()` 在空中直接 return |
 | 单障碍 2.35 s 从右循环到左 | `OBSTACLE_PERIOD_MS 2350` |
 | 碰撞内缩约 5px / 3px | `HITBOX_INSET_X/Y` |

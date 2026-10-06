@@ -10,7 +10,9 @@ bool emgCalibrateTick();
 float emgCalibrateProgress();  // 0..1
 
 void emgService();             // ~500 Hz sampling + envelope
-bool emgPollJump();            // rising-edge jump (EMG or button), respects cooldown
+// Rising-edge jump (EMG or button). If accept is false (airborne / hit),
+// the edge is discarded without starting cooldown — same as zhi-dao-le.
+bool emgPollJump(bool accept = true);
 bool emgEffortNow();           // envelope currently above threshold
 
 uint16_t emgRaw();

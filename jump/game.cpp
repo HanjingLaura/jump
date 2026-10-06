@@ -133,16 +133,36 @@ bool displayBegin() {
 
 static float groundY() { return (float)(GROUND_Y - PLAYER_H); }
 
-static float jumpHeightAt(float t01) {
-  if (t01 <= 0.0f) return 0;
-  if (t01 >= 1.0f) return 0;
-  if (t01 <= JUMP_HANG_START) {
-    float u = t01 / JUMP_HANG_START;
-    return JUMP_PEAK_PX * (1.0f - (1.0f - u) * (1.0f - u));
+static float cubicBez(float t, float a, float b) {
+  float u = 1.0f - t;
+  return 3.0f * u * u * t * a + 3.0f * u * t * t * b + t * t * t;
+}
+
+// CSS animation-timing-function cubic-bezier → keyframe progress.
+static float jumpEaseProgress(float x) {
+  float t = x;
+  for (int i = 0; i < 6; i++) {
+    float u = 1.0f - t;
+    float xt = cubicBez(t, JUMP_BEZIER_X1, JUMP_BEZIER_X2);
+    float dx = 3.0f * u * u * JUMP_BEZIER_X1 + 6.0f * u * t * JUMP_BEZIER_X2 + 3.0f * t * t;
+    if (dx < 1e-5f) break;
+    t -= (xt - x) / dx;
+    if (t < 0) t = 0;
+    if (t > 1) t = 1;
   }
-  if (t01 <= JUMP_HANG_END) return JUMP_PEAK_PX;
-  float u = (t01 - JUMP_HANG_END) / (1.0f - JUMP_HANG_END);
-  return JUMP_PEAK_PX * (1.0f - u) * (1.0f - u);
+  return cubicBez(t, JUMP_BEZIER_Y1, JUMP_BEZIER_Y2);
+}
+
+static float jumpKeyLift(float p) {
+  if (p <= 0.0f) return 0;
+  if (p >= 1.0f) return 0;
+  if (p <= JUMP_HANG_START) return p / JUMP_HANG_START;
+  if (p <= JUMP_HANG_END) return 1.0f;
+  return (1.0f - p) / (1.0f - JUMP_HANG_END);
+}
+
+static float jumpHeightAt(float t01) {
+  return JUMP_PEAK_PX * jumpKeyLift(jumpEaseProgress(t01));
 }
 
 static void tickJump(uint32_t now) {
@@ -176,7 +196,7 @@ static void resetRun() {
   runAnimMs = 0;
   score = 0;
   speed = SPEED_START;
-  obstacle.x = (float)OLED_WIDTH;
+  obstacle.x = (float)(OLED_WIDTH + 4);
   obstacle.scored = 0;
 }
 
@@ -316,7 +336,6 @@ static void drawGameOver() {
 }
 
 static void updatePlaying(uint32_t now, uint32_t dtMs) {
-  if (emgPollJump()) doJump();
   tickJump(now);
   tickRunAnim(dtMs);
 
@@ -330,7 +349,7 @@ static void updatePlaying(uint32_t now, uint32_t dtMs) {
     score++;
   }
   if (obstacle.x + s.w < -2) {
-    obstacle.x = (float)OLED_WIDTH;
+    obstacle.x = (float)(OLED_WIDTH + 4);
     obstacle.scored = 0;
   }
 
@@ -395,13 +414,14 @@ void gameLoop() {
         tickRunAnim(dt);
         drawReady();
       }
-      if (emgPollJump()) {
+      if (emgPollJump(true)) {
         resetRun();
         doJump();
         state = State::Playing;
       }
       break;
     case State::Playing:
+      if (emgPollJump(!jumping)) doJump();
       if (now - lastFrameMs >= frameMs) {
         uint32_t dt = now - lastFrameMs;
         lastFrameMs = now;
@@ -410,6 +430,7 @@ void gameLoop() {
       }
       break;
     case State::HitStun:
+      emgPollJump(false);
       if (now - lastFrameMs >= frameMs) {
         lastFrameMs = now;
         drawPlaying();
@@ -423,7 +444,7 @@ void gameLoop() {
         lastFrameMs = now;
         drawGameOver();
       }
-      if (emgPollJump()) {
+      if (emgPollJump(true)) {
         resetRun();
         state = State::Playing;
       }

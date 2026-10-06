@@ -111,20 +111,18 @@ void emgService() {
 static bool buttonFallingEdge() {
   bool level = digitalRead(PIN_JUMP_BTN);  // HIGH idle, LOW pressed
   uint32_t now = millis();
-  if (level != btnLast && (now - btnChangeMs) > 25) {
-    btnChangeMs = now;
-    bool was = btnLast;
-    btnLast = level;
-    if (was && !level) return true;
-  }
-  return false;
+  if (level == btnLast) return false;
+  if (now - btnChangeMs < 25) return false;
+  btnChangeMs = now;
+  btnLast = level;
+  return !level;
 }
 
 bool emgEffortNow() {
   return envelope >= threshold;
 }
 
-bool emgPollJump() {
+bool emgPollJump(bool accept) {
   emgService();
   uint32_t now = millis();
 
@@ -145,6 +143,7 @@ bool emgPollJump() {
 
   bool want = emgEdge || btn;
   if (!want) return false;
+  if (!accept) return false;
   if ((now - lastJumpMs) < EMG_COOLDOWN_MS) return false;
   lastJumpMs = now;
   return true;

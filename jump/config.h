@@ -62,8 +62,12 @@
 #define PLAYER_H           16
 #define JUMP_MS            680
 #define JUMP_PEAK_PX       18           // web: 20px in a 72px strip
-#define JUMP_HANG_START    0.38f
+#define JUMP_HANG_START    0.38f        // CSS keyframe percents
 #define JUMP_HANG_END      0.64f
+#define JUMP_BEZIER_X1     0.30f        // cubic-bezier(0.3, 0.02, 0.35, 1)
+#define JUMP_BEZIER_Y1     0.02f
+#define JUMP_BEZIER_X2     0.35f
+#define JUMP_BEZIER_Y2     1.00f
 #define RUN_CYCLE_MS       166          // two frames, step-end
 #define HITBOX_INSET_X     2            // web: 5px of 44px dino
 #define HITBOX_INSET_Y     1            // web: 3px of 47px dino
